@@ -1,39 +1,207 @@
-import time
+import asyncio
+import json
+from pathlib import Path
 
 import cv2
-import numpy as np
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
-from fastapi.responses import JSONResponse
-from fastapi.responses import StreamingResponse
+
+class ParkingZoneRequest(BaseModel):
+    points: list[list[int]]
 
 
 def create_dashboard(
     camera_manager,
-    ai_manager=None,
-    parking_manager=None
+    ai_manager,
+    parking_manager
 ):
 
     app = FastAPI(
         title="MulCamFeed",
-        version="1.0.0"
+        version="1.0"
     )
 
-    app.state.ai_manager = ai_manager
-    app.state.parking_manager = parking_manager
-
-    # --------------------------------------------------
-    # Dashboard
-    # --------------------------------------------------
-
-    @app.get(
-        "/",
-        response_class=HTMLResponse
-    )
+    @app.get("/", response_class=HTMLResponse)
     async def dashboard():
 
-        html = """
+        return HTMLResponse(
+            content=HTML_PAGE
+        )
+
+    @app.get("/api/cameras")
+    async def cameras():
+
+        return {
+            "cameras": camera_manager.get_camera_info(),
+            "total": camera_manager.get_total_count(),
+            "active": camera_manager.get_active_count()
+        }
+
+    @app.get("/api/parking/{camera_id}")
+    async def get_parking(camera_id: int):
+
+        return {
+            "camera_id": camera_id,
+            "zones": parking_manager.get_zones(camera_id)
+        }
+
+    @app.post("/api/parking/{camera_id}")
+    async def add_parking(
+        camera_id: int,
+        data: ParkingZoneRequest
+    ):
+
+        points = data.points
+
+        if len(points) < 4:
+            raise HTTPException(
+                status_code=400,
+                detail="A parking zone requires 4 points."
+            )
+
+        points = points[:4]
+
+        zone = parking_manager.add_zone(
+            camera_id,
+            points
+        )
+
+        return {
+            "success": True,
+            "zone": zone
+        }
+
+    @app.delete("/api/parking/{camera_id}")
+    async def clear_parking(camera_id: int):
+
+        parking_manager.clear_zones(
+            camera_id
+        )
+
+        return {
+            "success": True,
+            "camera_id": camera_id
+        }
+
+    @app.get("/api/parking/statistics")
+    async def parking_statistics():
+
+        return ai_manager.get_global_parking_statistics()
+
+    @app.get("/placeholder")
+    async def placeholder():
+
+        camera = None
+
+        frame = create_placeholder(
+            "NOT AVAILABLE"
+        )
+
+        success, encoded = cv2.imencode(
+            ".jpg",
+            frame
+        )
+
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail="Could not create placeholder."
+            )
+
+        return Response(
+            content=encoded.tobytes(),
+            media_type="image/jpeg"
+        )
+
+    @app.get("/stream/{camera_id}")
+    async def stream(camera_id: int):
+
+        camera = camera_manager.get_camera(
+            camera_id
+        )
+
+        if camera is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Camera not found."
+            )
+
+        async def generate():
+
+            while True:
+
+                frame = camera.get_stream_frame()
+
+                if frame is None:
+                    frame = create_placeholder(
+                        camera.name
+                    )
+
+                success, encoded = cv2.imencode(
+                    ".jpg",
+                    frame,
+                    [
+                        cv2.IMWRITE_JPEG_QUALITY,
+                        75
+                    ]
+                )
+
+                if success:
+
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + encoded.tobytes()
+                        + b"\r\n"
+                    )
+
+                await asyncio.sleep(
+                    0.04
+                )
+
+        return StreamingResponse(
+            generate(),
+            media_type=(
+                "multipart/x-mixed-replace; "
+                "boundary=frame"
+            )
+        )
+
+    return app
+
+
+def create_placeholder(text):
+
+    width = 640
+    height = 360
+
+    frame = cv2.UMat(
+        height,
+        width,
+        cv2.CV_8UC3
+    )
+
+    image = frame.get()
+
+    image[:] = 25
+
+    cv2.putText(
+        image,
+        text,
+        (35, 160),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.2,
+        (220, 220, 220),
+        2,
+        cv2.LINE_AA
+    )
+
+    return image
+
+
+HTML_PAGE = """
 <!DOCTYPE html>
 
 <html lang="en">
@@ -56,562 +224,235 @@ def create_dashboard(
 }
 
 body {
-
     margin: 0;
-
-    background: #080a0d;
-
-    color: white;
-
+    background: #101114;
+    color: #ffffff;
     font-family:
         -apple-system,
         BlinkMacSystemFont,
         "Segoe UI",
         sans-serif;
-
 }
 
-.header {
-
-    min-height: 78px;
-
+header {
+    height: 70px;
     display: flex;
-
     align-items: center;
-
     justify-content: space-between;
-
-    padding: 12px 28px;
-
-    background: #12151a;
-
-    border-bottom:
-        1px solid
-        rgba(255,255,255,0.08);
-
+    padding: 0 24px;
+    background: #17191e;
+    border-bottom: 1px solid #292c33;
 }
 
 .logo {
-
-    font-size: 23px;
-
+    font-size: 22px;
     font-weight: 700;
-
-}
-
-.subtitle {
-
-    margin-top: 3px;
-
-    color: #89929d;
-
-    font-size: 13px;
-
 }
 
 .header-right {
-
     display: flex;
-
+    gap: 24px;
     align-items: center;
-
-    gap: 18px;
-
 }
 
 .stat {
-
-    padding:
-        7px
-        12px;
-
-    border-radius: 7px;
-
-    background: #1a2027;
-
-    color: #b9c1ca;
-
-    font-size: 12px;
-
+    color: #b8bcc5;
+    font-size: 14px;
 }
 
 .stat strong {
-
-    color: white;
-
-    font-size: 14px;
-
+    color: #ffffff;
+    margin-left: 5px;
 }
 
-.dashboard {
-
+main {
     padding: 20px;
-
 }
 
-.grid {
-
-    display: grid;
-
-    grid-template-columns:
-        repeat(2, minmax(0, 1fr));
-
-    gap: 18px;
-
-}
-
-.camera-card {
-
-    overflow: hidden;
-
-    background: #11151a;
-
-    border:
-        1px solid
-        rgba(255,255,255,0.08);
-
-    border-radius: 12px;
-
-}
-
-.camera-header {
-
-    min-height: 52px;
-
-    padding:
-        8px
-        14px;
-
+.toolbar {
     display: flex;
-
-    align-items: center;
-
     justify-content: space-between;
-
-    border-bottom:
-        1px solid
-        rgba(255,255,255,0.07);
-
-}
-
-.camera-title {
-
-    display: flex;
-
-    flex-direction: column;
-
-    gap: 3px;
-
-}
-
-.camera-name {
-
-    font-size: 14px;
-
-    font-weight: 600;
-
-}
-
-.camera-meta {
-
-    color: #737d88;
-
-    font-size: 10px;
-
-}
-
-.status {
-
-    display: flex;
-
     align-items: center;
+    margin-bottom: 18px;
+}
 
-    gap: 6px;
-
-    font-size: 10px;
-
+.page-title {
+    font-size: 18px;
     font-weight: 600;
-
 }
 
-.status-dot {
-
-    width: 7px;
-
-    height: 7px;
-
-    border-radius: 50%;
-
-    background: #666;
-
-}
-
-.status-live .status-dot {
-
-    background: #35d07f;
-
-    box-shadow:
-        0 0 8px
-        rgba(53,208,127,0.7);
-
-}
-
-.status-connecting .status-dot {
-
-    background: #f0b429;
-
-}
-
-.status-error .status-dot {
-
-    background: #ff4d4d;
-
-}
-
-.video-container {
-
-    position: relative;
-
-    width: 100%;
-
-    aspect-ratio: 16 / 9;
-
-    background: #030405;
-
-    overflow: hidden;
-
-}
-
-.video-container img {
-
-    display: block;
-
-    width: 100%;
-
-    height: 100%;
-
-    object-fit: contain;
-
-}
-
-.parking-canvas {
-
-    position: absolute;
-
-    inset: 0;
-
-    width: 100%;
-
-    height: 100%;
-
-    cursor: default;
-
-}
-
-.parking-canvas.drawing {
-
-    cursor: crosshair;
-
-}
-
-.camera-footer {
-
-    min-height: 48px;
-
-    padding:
-        8px
-        12px;
-
+.page-controls {
     display: flex;
-
-    align-items: center;
-
-    justify-content: space-between;
-
     gap: 8px;
-
-    border-top:
-        1px solid
-        rgba(255,255,255,0.06);
-
-}
-
-.parking-info {
-
-    display: flex;
-
-    gap: 10px;
-
-    flex-wrap: wrap;
-
-}
-
-.parking-stat {
-
-    font-size: 11px;
-
-    color: #8d96a0;
-
-}
-
-.parking-stat strong {
-
-    color: white;
-
-}
-
-.parking-stat.occupied strong {
-
-    color: #ff5252;
-
-}
-
-.parking-stat.free strong {
-
-    color: #35d07f;
-
-}
-
-.camera-actions {
-
-    display: flex;
-
-    gap: 6px;
-
 }
 
 button {
-
-    border:
-        1px solid
-        rgba(255,255,255,0.12);
-
-    background: #171c22;
-
+    border: 1px solid #363a43;
+    background: #20232a;
     color: white;
-
-    padding:
-        7px
-        10px;
-
-    border-radius: 6px;
-
+    padding: 9px 14px;
+    border-radius: 7px;
     cursor: pointer;
-
-    font-size: 10px;
-
+    font-size: 13px;
 }
 
-button:hover:not(:disabled) {
+button:hover {
+    background: #2a2e37;
+}
 
-    background: #222932;
+button.primary {
+    background: #2563eb;
+    border-color: #2563eb;
+}
 
+button.danger {
+    background: #8f1d1d;
+    border-color: #8f1d1d;
 }
 
 button:disabled {
-
-    opacity: 0.35;
-
-    cursor: default;
-
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
-.draw-active {
+.grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+}
 
-    background: #244d38;
+.card {
+    background: #181a20;
+    border: 1px solid #292c34;
+    border-radius: 10px;
+    overflow: hidden;
+}
 
-    border-color: #35d07f;
+.card-header {
+    height: 46px;
+    padding: 0 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #292c34;
+}
 
+.camera-name {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.status {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 20px;
+    background: #292c34;
+}
+
+.status.live {
+    color: #62e58a;
+}
+
+.status.offline {
+    color: #ff6b6b;
+}
+
+.video-wrapper {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #08090b;
+    overflow: hidden;
+}
+
+.video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.editor {
+    position: absolute;
+    inset: 0;
+    display: none;
+}
+
+.editor.active {
+    display: block;
+}
+
+.editor canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: crosshair;
+}
+
+.card-footer {
+    min-height: 48px;
+    padding: 8px 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
 }
 
 .controls {
-
     display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    gap: 14px;
-
-    margin-top: 20px;
-
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
-.page {
-
-    min-width: 110px;
-
-    text-align: center;
-
-    color: #969faa;
-
-    font-size: 12px;
-
-}
-
-.empty-card {
-
-    min-height: 260px;
-
-    display: flex;
-
-    align-items: center;
-
-    justify-content: center;
-
-    flex-direction: column;
-
-    gap: 8px;
-
-    background: #0e1115;
-
-    border:
-        1px solid
-        rgba(255,255,255,0.06);
-
-    border-radius: 12px;
-
-    color: #626b75;
-
-}
-
-.empty-title {
-
-    color: #858e98;
-
-    font-size: 13px;
-
-}
-
-.empty-subtitle {
-
+.camera-info {
+    color: #858a95;
     font-size: 11px;
-
 }
 
-.toast {
-
-    position: fixed;
-
-    right: 20px;
-
-    bottom: 20px;
-
-    padding:
-        10px
-        14px;
-
-    background: #1b222a;
-
-    border:
-        1px solid
-        rgba(255,255,255,0.12);
-
-    border-radius: 7px;
-
-    color: white;
-
-    font-size: 12px;
-
-    opacity: 0;
-
-    pointer-events: none;
-
-    transform:
-        translateY(10px);
-
-    transition:
-        opacity 0.2s,
-        transform 0.2s;
-
-    z-index: 1000;
-
-}
-
-.toast.show {
-
-    opacity: 1;
-
-    transform:
-        translateY(0);
-
-}
-
-.legend {
-
+.empty {
     display: flex;
-
-    justify-content: center;
-
-    gap: 18px;
-
-    margin-top: 14px;
-
-    color: #747e89;
-
-    font-size: 10px;
-
-}
-
-.legend-item {
-
-    display: flex;
-
     align-items: center;
-
-    gap: 5px;
-
+    justify-content: center;
+    height: 250px;
+    color: #777d87;
+    border: 1px dashed #30343c;
+    border-radius: 10px;
 }
 
-.legend-box {
-
-    width: 9px;
-
-    height: 9px;
-
-    border-radius: 2px;
-
+.footer-stats {
+    margin-top: 18px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
-.legend-free {
-
-    background: #35d07f;
-
+.big-stat {
+    background: #181a20;
+    border: 1px solid #292c34;
+    border-radius: 8px;
+    padding: 12px 18px;
+    min-width: 150px;
 }
 
-.legend-occupied {
+.big-stat-label {
+    color: #858a95;
+    font-size: 11px;
+}
 
-    background: #ff3f3f;
-
+.big-stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    margin-top: 4px;
 }
 
 @media (max-width: 900px) {
 
     .grid {
-
         grid-template-columns: 1fr;
-
-    }
-
-    .header {
-
-        padding:
-            12px
-            16px;
-
     }
 
     .header-right {
-
-        gap: 6px;
-
-    }
-
-    .dashboard {
-
-        padding: 12px;
-
+        gap: 10px;
     }
 
 }
@@ -623,21 +464,11 @@ button:disabled {
 
 <body>
 
+<header>
 
-<header class="header">
-
-    <div>
-
-        <div class="logo">
-            MulCamFeed
-        </div>
-
-        <div class="subtitle">
-            Multi-Camera Monitoring Dashboard
-        </div>
-
+    <div class="logo">
+        MulCamFeed
     </div>
-
 
     <div class="header-right">
 
@@ -647,13 +478,13 @@ button:disabled {
         </div>
 
         <div class="stat">
-            Parked:
-            <strong id="parkedCount">0</strong>
+            Vehicles:
+            <strong id="vehicleCount">0</strong>
         </div>
 
         <div class="stat">
-            Free:
-            <strong id="freeCount">0</strong>
+            Parking:
+            <strong id="parkingCount">0 / 0</strong>
         </div>
 
     </div>
@@ -661,70 +492,93 @@ button:disabled {
 </header>
 
 
-<main class="dashboard">
+<main>
 
-    <section
-        class="grid"
-        id="cameraGrid"
-    >
-    </section>
+    <div class="toolbar">
 
-
-    <div class="legend">
-
-        <div class="legend-item">
-            <span
-                class="legend-box legend-free"
-            ></span>
-            FREE
+        <div class="page-title">
+            Camera Dashboard
         </div>
 
-        <div class="legend-item">
-            <span
-                class="legend-box legend-occupied"
-            ></span>
-            OCCUPIED
+        <div class="page-controls">
+
+            <button
+                id="previousButton"
+                onclick="previousPage()"
+            >
+                Previous
+            </button>
+
+            <button
+                id="nextButton"
+                onclick="nextPage()"
+            >
+                Next
+            </button>
+
         </div>
 
     </div>
 
 
-    <div class="controls">
-
-        <button
-            id="previousButton"
-            onclick="previousPage()"
-        >
-            ← Previous
-        </button>
+    <div
+        id="cameraGrid"
+        class="grid"
+    ></div>
 
 
-        <div
-            class="page"
-            id="pageNumber"
-        >
-            Page 1 / 1
+    <div class="footer-stats">
+
+        <div class="big-stat">
+
+            <div class="big-stat-label">
+                Total Parking Spaces
+            </div>
+
+            <div
+                class="big-stat-value"
+                id="totalSpaces"
+            >
+                0
+            </div>
+
         </div>
 
 
-        <button
-            id="nextButton"
-            onclick="nextPage()"
-        >
-            Next →
-        </button>
+        <div class="big-stat">
+
+            <div class="big-stat-label">
+                Occupied
+            </div>
+
+            <div
+                class="big-stat-value"
+                id="occupiedSpaces"
+            >
+                0
+            </div>
+
+        </div>
+
+
+        <div class="big-stat">
+
+            <div class="big-stat-label">
+                Available
+            </div>
+
+            <div
+                class="big-stat-value"
+                id="availableSpaces"
+            >
+                0
+            </div>
+
+        </div>
 
     </div>
 
 </main>
-
-
-<div
-    class="toast"
-    id="toast"
->
-    Saved
-</div>
 
 
 <script>
@@ -735,46 +589,18 @@ let currentPage = 0;
 
 const camerasPerPage = 4;
 
-const drawingStates = {};
+const editors = {};
 
-const cameraZones = {};
-
-
-// --------------------------------------------------
-// Toast
-// --------------------------------------------------
-
-function showToast(message) {
-
-    const toast =
-        document.getElementById("toast");
-
-    toast.textContent = message;
-
-    toast.classList.add("show");
-
-    setTimeout(
-        () => {
-            toast.classList.remove("show");
-        },
-        1800
-    );
-}
-
-
-// --------------------------------------------------
-// Camera API
-// --------------------------------------------------
 
 async function loadCameras() {
 
     try {
 
-        const response =
-            await fetch("/api/cameras");
+        const response = await fetch(
+            "/api/cameras"
+        );
 
-        const data =
-            await response.json();
+        const data = await response.json();
 
         cameras = data.cameras || [];
 
@@ -785,9 +611,7 @@ async function loadCameras() {
 
         renderPage();
 
-    }
-
-    catch (error) {
+    } catch (error) {
 
         console.error(
             "Camera API error:",
@@ -799,184 +623,6 @@ async function loadCameras() {
 }
 
 
-// --------------------------------------------------
-// Parking statistics
-// --------------------------------------------------
-
-async function loadParkingStatistics() {
-
-    try {
-
-        const response =
-            await fetch(
-                "/api/parking/statistics"
-            );
-
-        if (!response.ok) {
-            return;
-        }
-
-        const data =
-            await response.json();
-
-        document.getElementById(
-            "parkedCount"
-        ).textContent =
-            data.occupied_spaces || 0;
-
-        document.getElementById(
-            "freeCount"
-        ).textContent =
-            data.available_spaces || 0;
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Parking statistics error:",
-            error
-        );
-
-    }
-
-}
-
-
-// --------------------------------------------------
-// Load parking zones
-// --------------------------------------------------
-
-async function loadZones(cameraId) {
-
-    try {
-
-        const response =
-            await fetch(
-                `/api/parking/${cameraId}`
-            );
-
-        if (!response.ok) {
-            return [];
-        }
-
-        const data =
-            await response.json();
-
-        cameraZones[cameraId] =
-            data.zones || [];
-
-        return cameraZones[cameraId];
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Parking zone error:",
-            error
-        );
-
-        return [];
-
-    }
-
-}
-
-
-// --------------------------------------------------
-// Load camera parking stats
-// --------------------------------------------------
-
-async function loadCameraParking(
-    cameraId
-) {
-
-    try {
-
-        const response =
-            await fetch(
-                `/api/parking/${cameraId}/statistics`
-            );
-
-        if (!response.ok) {
-            return;
-        }
-
-        const data =
-            await response.json();
-
-        const total =
-            document.getElementById(
-                `parking-total-${cameraId}`
-            );
-
-        const occupied =
-            document.getElementById(
-                `parking-occupied-${cameraId}`
-            );
-
-        const free =
-            document.getElementById(
-                `parking-free-${cameraId}`
-            );
-
-        if (total) {
-            total.textContent =
-                data.total_spaces || 0;
-        }
-
-        if (occupied) {
-            occupied.textContent =
-                data.occupied_spaces || 0;
-        }
-
-        if (free) {
-            free.textContent =
-                data.available_spaces || 0;
-        }
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Camera parking error:",
-            error
-        );
-
-    }
-
-}
-
-
-// --------------------------------------------------
-// Status
-// --------------------------------------------------
-
-function getStatusClass(status) {
-
-    if (status === "LIVE") {
-        return "status-live";
-    }
-
-    if (status === "CONNECTING") {
-        return "status-connecting";
-    }
-
-    if (status === "ERROR") {
-        return "status-error";
-    }
-
-    return "status-unavailable";
-
-}
-
-
-// --------------------------------------------------
-// Render dashboard
-// --------------------------------------------------
-
 function renderPage() {
 
     const grid =
@@ -986,28 +632,8 @@ function renderPage() {
 
     grid.innerHTML = "";
 
-    const totalPages =
-        Math.max(
-            1,
-            Math.ceil(
-                cameras.length /
-                camerasPerPage
-            )
-        );
-
-    if (
-        currentPage >=
-        totalPages
-    ) {
-
-        currentPage =
-            totalPages - 1;
-
-    }
-
     const start =
-        currentPage *
-        camerasPerPage;
+        currentPage * camerasPerPage;
 
     const pageCameras =
         cameras.slice(
@@ -1015,220 +641,179 @@ function renderPage() {
             start + camerasPerPage
         );
 
+    if (pageCameras.length === 0) {
+
+        grid.innerHTML = `
+            <div class="empty">
+                No cameras configured
+            </div>
+        `;
+
+        updatePagination();
+
+        return;
+
+    }
+
 
     for (
-        const camera
-        of pageCameras
+        let index = 0;
+        index < camerasPerPage;
+        index++
     ) {
 
-        const card =
-            document.createElement(
-                "div"
+        const camera =
+            pageCameras[index];
+
+        if (camera) {
+
+            grid.appendChild(
+                createCameraCard(camera)
             );
 
-        card.className =
-            "camera-card";
+        } else {
 
-        card.innerHTML = `
+            const empty =
+                document.createElement(
+                    "div"
+                );
 
-            <div class="camera-header">
+            empty.className = "empty";
 
-                <div class="camera-title">
+            empty.textContent =
+                "NOT AVAILABLE";
 
-                    <div class="camera-name">
-                        ${camera.name}
-                    </div>
+            grid.appendChild(empty);
 
-                    <div class="camera-meta">
-                        Camera ${camera.id}
-                        ·
-                        ${camera.ai_mode || "none"}
-                    </div>
-
-                </div>
-
-
-                <div
-                    class="
-                        status
-                        ${getStatusClass(
-                            camera.status
-                        )}
-                    "
-                >
-
-                    <span
-                        class="status-dot"
-                    ></span>
-
-                    <span>
-                        ${camera.status}
-                    </span>
-
-                </div>
-
-            </div>
-
-
-            <div class="video-container">
-
-                <img
-                    src="/stream/${camera.id}"
-                    alt="${camera.name}"
-                >
-
-                <canvas
-                    id="canvas-${camera.id}"
-                    class="parking-canvas"
-                ></canvas>
-
-            </div>
-
-
-            <div class="camera-footer">
-
-                <div class="parking-info">
-
-                    <div
-                        class="parking-stat"
-                    >
-                        Spaces:
-                        <strong
-                            id="parking-total-${camera.id}"
-                        >
-                            0
-                        </strong>
-                    </div>
-
-                    <div
-                        class="
-                            parking-stat
-                            occupied
-                        "
-                    >
-                        Occupied:
-                        <strong
-                            id="parking-occupied-${camera.id}"
-                        >
-                            0
-                        </strong>
-                    </div>
-
-                    <div
-                        class="
-                            parking-stat
-                            free
-                        "
-                    >
-                        Free:
-                        <strong
-                            id="parking-free-${camera.id}"
-                        >
-                            0
-                        </strong>
-                    </div>
-
-                </div>
-
-
-                <div class="camera-actions">
-
-                    <button
-                        id="draw-${camera.id}"
-                        onclick="
-                            toggleDrawing(
-                                ${camera.id}
-                            )
-                        "
-                    >
-                        Draw Parking
-                    </button>
-
-                    <button
-                        onclick="
-                            clearParking(
-                                ${camera.id}
-                            )
-                        "
-                    >
-                        Clear
-                    </button>
-
-                </div>
-
-            </div>
-        `;
-
-        grid.appendChild(card);
-
-        setupCanvas(camera.id);
-
-        loadZones(camera.id);
-
-        loadCameraParking(camera.id);
+        }
 
     }
 
-
-    while (
-        grid.children.length <
-        camerasPerPage
-    ) {
-
-        const empty =
-            document.createElement(
-                "div"
-            );
-
-        empty.className =
-            "empty-card";
-
-        empty.innerHTML = `
-
-            <div class="empty-title">
-                NOT AVAILABLE
-            </div>
-
-            <div class="empty-subtitle">
-                No camera assigned
-                to this slot
-            </div>
-
-        `;
-
-        grid.appendChild(empty);
-
-    }
-
-
-    document.getElementById(
-        "pageNumber"
-    ).textContent =
-        `Page ${
-            currentPage + 1
-        } / ${totalPages}`;
-
-
-    document.getElementById(
-        "previousButton"
-    ).disabled =
-        currentPage === 0;
-
-
-    document.getElementById(
-        "nextButton"
-    ).disabled =
-        currentPage >=
-        totalPages - 1;
+    updatePagination();
 
 }
 
 
-// --------------------------------------------------
-// Canvas setup
-// --------------------------------------------------
+function createCameraCard(camera) {
 
-function setupCanvas(cameraId) {
+    const card =
+        document.createElement("div");
+
+    card.className = "card";
+
+    const live =
+        camera.status === "LIVE";
+
+    const statusClass =
+        live
+            ? "live"
+            : "offline";
+
+    const streamUrl =
+        `/stream/${camera.id}?t=${Date.now()}`;
+
+    card.innerHTML = `
+
+        <div class="card-header">
+
+            <div class="camera-name">
+                ${escapeHtml(camera.name)}
+            </div>
+
+            <div class="status ${statusClass}">
+                ${escapeHtml(camera.status)}
+            </div>
+
+        </div>
+
+
+        <div
+            class="video-wrapper"
+            id="wrapper-${camera.id}"
+        >
+
+            <img
+                class="video"
+                src="${streamUrl}"
+                alt="${escapeHtml(camera.name)}"
+                onerror="this.src='/placeholder'"
+            >
+
+            <div
+                class="editor"
+                id="editor-${camera.id}"
+            >
+
+                <canvas
+                    id="canvas-${camera.id}"
+                ></canvas>
+
+            </div>
+
+        </div>
+
+
+        <div class="card-footer">
+
+            <div class="controls">
+
+                <button
+                    onclick="startDrawing(${camera.id})"
+                >
+                    Draw Parking
+                </button>
+
+                <button
+                    id="finish-${camera.id}"
+                    class="primary"
+                    onclick="finishDrawing(${camera.id})"
+                    disabled
+                >
+                    Finish
+                </button>
+
+                <button
+                    onclick="cancelDrawing(${camera.id})"
+                    disabled
+                    id="cancel-${camera.id}"
+                >
+                    Cancel
+                </button>
+
+                <button
+                    class="danger"
+                    onclick="clearParking(${camera.id})"
+                >
+                    Clear
+                </button>
+
+            </div>
+
+            <div class="camera-info">
+
+                AI:
+                ${escapeHtml(camera.ai_mode)}
+
+                <br>
+
+                ${camera.fps} FPS
+
+            </div>
+
+        </div>
+    `;
+
+    setTimeout(
+        () => setupEditor(camera.id),
+        0
+    );
+
+    return card;
+
+}
+
+
+function setupEditor(cameraId) {
 
     const canvas =
         document.getElementById(
@@ -1239,191 +824,199 @@ function setupCanvas(cameraId) {
         return;
     }
 
-    const container =
-        canvas.parentElement;
+    const wrapper =
+        document.getElementById(
+            `wrapper-${cameraId}`
+        );
 
-    function resizeCanvas() {
+    editors[cameraId] = {
+        canvas: canvas,
+        wrapper: wrapper,
+        points: [],
+        drawing: false
+    };
 
-        canvas.width =
-            container.clientWidth;
-
-        canvas.height =
-            container.clientHeight;
-
-        drawZones(cameraId);
-
-    }
-
-    resizeCanvas();
-
-    window.addEventListener(
-        "resize",
-        resizeCanvas
+    canvas.addEventListener(
+        "click",
+        event => handleCanvasClick(
+            cameraId,
+            event
+        )
     );
 
-    canvas.onclick =
-        function(event) {
+}
 
-            if (
-                !drawingStates[cameraId]
-                ||
-                !drawingStates[
-                    cameraId
-                ].active
-            ) {
-                return;
-            }
 
-            const rect =
-                canvas.getBoundingClientRect();
+function startDrawing(cameraId) {
 
-            const x =
-                event.clientX -
-                rect.left;
+    const editor =
+        editors[cameraId];
 
-            const y =
-                event.clientY -
-                rect.top;
+    if (!editor) {
+        return;
+    }
 
-            const state =
-                drawingStates[
-                    cameraId
-                ];
+    editor.points = [];
 
-            state.points.push([
-                x,
-                y
-            ]);
+    editor.drawing = true;
 
-            drawZones(cameraId);
+    const element =
+        document.getElementById(
+            `editor-${cameraId}`
+        );
 
-            if (
-                state.points.length === 4
-            ) {
+    element.classList.add("active");
 
-                saveNewZone(
-                    cameraId,
-                    state.points
-                );
+    document.getElementById(
+        `finish-${cameraId}`
+    ).disabled = false;
 
-            }
+    document.getElementById(
+        `cancel-${cameraId}`
+    ).disabled = false;
 
-        };
+    resizeCanvas(
+        cameraId
+    );
+
+    redrawEditor(
+        cameraId
+    );
 
 }
 
 
-// --------------------------------------------------
-// Drawing mode
-// --------------------------------------------------
+function finishDrawing(cameraId) {
 
-function toggleDrawing(cameraId) {
+    const editor =
+        editors[cameraId];
 
-    if (
-        !drawingStates[cameraId]
-    ) {
-
-        drawingStates[cameraId] = {
-            active: false,
-            points: []
-        };
-
+    if (!editor) {
+        return;
     }
 
-    const state =
-        drawingStates[cameraId];
+    editor.drawing = false;
 
-    state.active =
-        !state.active;
+    document.getElementById(
+        `finish-${cameraId}`
+    ).disabled = true;
 
-    state.points = [];
+    document.getElementById(
+        `cancel-${cameraId}`
+    ).disabled = true;
 
-    const button =
+    const element =
         document.getElementById(
-            `draw-${cameraId}`
+            `editor-${cameraId}`
         );
 
-    const canvas =
-        document.getElementById(
-            `canvas-${cameraId}`
-        );
+    element.classList.remove("active");
 
-    if (state.active) {
-
-        button.textContent =
-            "Click 4 Corners";
-
-        button.classList.add(
-            "draw-active"
-        );
-
-        canvas.classList.add(
-            "drawing"
-        );
-
-        showToast(
-            "Click 4 corners of the parking space"
-        );
-
-    }
-
-    else {
-
-        button.textContent =
-            "Draw Parking";
-
-        button.classList.remove(
-            "draw-active"
-        );
-
-        canvas.classList.remove(
-            "drawing"
-        );
-
-    }
-
-    drawZones(cameraId);
+    editor.points = [];
 
 }
 
 
-// --------------------------------------------------
-// Save parking zone
-// --------------------------------------------------
+function cancelDrawing(cameraId) {
 
-async function saveNewZone(
+    const editor =
+        editors[cameraId];
+
+    if (!editor) {
+        return;
+    }
+
+    editor.points = [];
+
+    editor.drawing = false;
+
+    redrawEditor(
+        cameraId
+    );
+
+    document.getElementById(
+        `finish-${cameraId}`
+    ).disabled = true;
+
+    document.getElementById(
+        `cancel-${cameraId}`
+    ).disabled = true;
+
+    document.getElementById(
+        `editor-${cameraId}`
+    ).classList.remove("active");
+
+}
+
+
+function handleCanvasClick(
     cameraId,
-    points
+    event
 ) {
 
-    const canvas =
-        document.getElementById(
-            `canvas-${cameraId}`
+    const editor =
+        editors[cameraId];
+
+    if (!editor || !editor.drawing) {
+        return;
+    }
+
+    const rect =
+        editor.canvas.getBoundingClientRect();
+
+    const x =
+        Math.round(
+            (event.clientX - rect.left)
+            * editor.canvas.width
+            / rect.width
         );
 
-    const videoWidth = 640;
-
-    const videoHeight = 360;
-
-    const scaleX =
-        videoWidth /
-        canvas.width;
-
-    const scaleY =
-        videoHeight /
-        canvas.height;
-
-    const converted =
-        points.map(
-            point => [
-                Math.round(
-                    point[0] * scaleX
-                ),
-                Math.round(
-                    point[1] * scaleY
-                )
-            ]
+    const y =
+        Math.round(
+            (event.clientY - rect.top)
+            * editor.canvas.height
+            / rect.height
         );
+
+    editor.points.push([
+        x,
+        y
+    ]);
+
+    redrawEditor(
+        cameraId
+    );
+
+    if (editor.points.length === 4) {
+
+        saveCurrentZone(
+            cameraId
+        );
+
+    }
+
+}
+
+
+async function saveCurrentZone(cameraId) {
+
+    const editor =
+        editors[cameraId];
+
+    if (
+        !editor ||
+        editor.points.length !== 4
+    ) {
+        return;
+    }
+
+    const points =
+        editor.points
+            .slice(0, 4)
+            .map(point => [
+                Math.round(point[0]),
+                Math.round(point[1])
+            ]);
 
     try {
 
@@ -1439,79 +1032,34 @@ async function saveNewZone(
                     },
 
                     body: JSON.stringify({
-                        points: converted
+                        points: points
                     })
                 }
             );
 
         if (!response.ok) {
 
-            showToast(
-                "Failed to save parking space"
+            console.error(
+                "Could not save parking zone"
             );
 
             return;
 
         }
 
-        const data =
-            await response.json();
+        editor.points = [];
 
-        cameraZones[cameraId] =
-            data.zones || [];
-
-        drawingStates[
-            cameraId
-        ].points = [];
-
-        drawingStates[
-            cameraId
-        ].active = false;
-
-        const button =
-            document.getElementById(
-                `draw-${cameraId}`
-            );
-
-        const canvasElement =
-            document.getElementById(
-                `canvas-${cameraId}`
-            );
-
-        button.textContent =
-            "Draw Parking";
-
-        button.classList.remove(
-            "draw-active"
-        );
-
-        canvasElement.classList.remove(
-            "drawing"
-        );
-
-        drawZones(cameraId);
-
-        await loadCameraParking(
+        redrawEditor(
             cameraId
         );
 
-        await loadParkingStatistics();
+        updateParkingStats();
 
-        showToast(
-            "Parking space saved"
-        );
-
-    }
-
-    catch (error) {
+    } catch (error) {
 
         console.error(
-            "Save parking error:",
+            "Parking save error:",
             error
-        );
-
-        showToast(
-            "Failed to save parking space"
         );
 
     }
@@ -1519,14 +1067,155 @@ async function saveNewZone(
 }
 
 
-// --------------------------------------------------
-// Clear parking
-// --------------------------------------------------
+function resizeCanvas(cameraId) {
+
+    const editor =
+        editors[cameraId];
+
+    if (!editor) {
+        return;
+    }
+
+    const image =
+        document.querySelector(
+            `#wrapper-${cameraId} img`
+        );
+
+    if (!image) {
+        return;
+    }
+
+    const width =
+        image.naturalWidth || 640;
+
+    const height =
+        image.naturalHeight || 360;
+
+    editor.canvas.width =
+        width;
+
+    editor.canvas.height =
+        height;
+
+    editor.canvas.style.width =
+        "100%";
+
+    editor.canvas.style.height =
+        "100%";
+
+}
+
+
+function redrawEditor(cameraId) {
+
+    const editor =
+        editors[cameraId];
+
+    if (!editor) {
+        return;
+    }
+
+    resizeCanvas(
+        cameraId
+    );
+
+    const ctx =
+        editor.canvas.getContext(
+            "2d"
+        );
+
+    ctx.clearRect(
+        0,
+        0,
+        editor.canvas.width,
+        editor.canvas.height
+    );
+
+    const points =
+        editor.points;
+
+    if (points.length === 0) {
+        return;
+    }
+
+
+    ctx.lineWidth = 3;
+
+    ctx.strokeStyle =
+        "#00ff66";
+
+    ctx.fillStyle =
+        "rgba(0,255,100,0.18)";
+
+    ctx.beginPath();
+
+    ctx.moveTo(
+        points[0][0],
+        points[0][1]
+    );
+
+    for (
+        let i = 1;
+        i < points.length;
+        i++
+    ) {
+
+        ctx.lineTo(
+            points[i][0],
+            points[i][1]
+        );
+
+    }
+
+    if (points.length === 4) {
+
+        ctx.lineTo(
+            points[0][0],
+            points[0][1]
+        );
+
+        ctx.fill();
+
+    }
+
+    ctx.stroke();
+
+
+    for (
+        let i = 0;
+        i < points.length;
+        i++
+    ) {
+
+        ctx.beginPath();
+
+        ctx.arc(
+            points[i][0],
+            points[i][1],
+            7,
+            0,
+            Math.PI * 2
+        );
+
+        ctx.fillStyle =
+            "#ffffff";
+
+        ctx.fill();
+
+        ctx.strokeStyle =
+            "#00ff66";
+
+        ctx.stroke();
+
+    }
+
+}
+
 
 async function clearParking(cameraId) {
 
     const confirmed =
-        window.confirm(
+        confirm(
             "Clear all parking spaces for this camera?"
         );
 
@@ -1536,54 +1225,19 @@ async function clearParking(cameraId) {
 
     try {
 
-        const response =
-            await fetch(
-                `/api/parking/${cameraId}`,
-                {
-                    method: "DELETE"
-                }
-            );
-
-        if (!response.ok) {
-
-            showToast(
-                "Failed to clear parking"
-            );
-
-            return;
-
-        }
-
-        cameraZones[cameraId] = [];
-
-        if (
-            drawingStates[cameraId]
-        ) {
-
-            drawingStates[
-                cameraId
-            ].points = [];
-
-        }
-
-        drawZones(cameraId);
-
-        await loadCameraParking(
-            cameraId
+        await fetch(
+            `/api/parking/${cameraId}`,
+            {
+                method: "DELETE"
+            }
         );
 
-        await loadParkingStatistics();
+        updateParkingStats();
 
-        showToast(
-            "Parking spaces cleared"
-        );
-
-    }
-
-    catch (error) {
+    } catch (error) {
 
         console.error(
-            "Clear parking error:",
+            "Parking clear error:",
             error
         );
 
@@ -1592,193 +1246,30 @@ async function clearParking(cameraId) {
 }
 
 
-// --------------------------------------------------
-// Draw parking zones
-// --------------------------------------------------
+function previousPage() {
 
-function drawZones(cameraId) {
+    if (currentPage > 0) {
 
-    const canvas =
-        document.getElementById(
-            `canvas-${cameraId}`
-        );
+        currentPage--;
 
-    if (!canvas) {
-        return;
-    }
-
-    const context =
-        canvas.getContext("2d");
-
-    context.clearRect(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-    );
-
-    const zones =
-        cameraZones[cameraId] || [];
-
-    const scaleX =
-        canvas.width / 640;
-
-    const scaleY =
-        canvas.height / 360;
-
-
-    for (
-        const zone
-        of zones
-    ) {
-
-        const points =
-            zone.points.map(
-                point => [
-                    point[0] * scaleX,
-                    point[1] * scaleY
-                ]
-            );
-
-        context.beginPath();
-
-        context.moveTo(
-            points[0][0],
-            points[0][1]
-        );
-
-        for (
-            let i = 1;
-            i < points.length;
-            i++
-        ) {
-
-            context.lineTo(
-                points[i][0],
-                points[i][1]
-            );
-
-        }
-
-        context.closePath();
-
-        context.strokeStyle =
-            "#35d07f";
-
-        context.lineWidth = 2;
-
-        context.stroke();
-
-        context.fillStyle =
-            "rgba(53, 208, 127, 0.08)";
-
-        context.fill();
-
-        context.fillStyle =
-            "white";
-
-        context.font =
-            "11px sans-serif";
-
-        context.fillText(
-            `P${zone.id}`,
-            points[0][0] + 4,
-            points[0][1] - 4
-        );
-
-    }
-
-
-    const state =
-        drawingStates[cameraId];
-
-    if (
-        !state
-        ||
-        state.points.length === 0
-    ) {
-        return;
-    }
-
-
-    context.strokeStyle =
-        "#f0b429";
-
-    context.fillStyle =
-        "#f0b429";
-
-    context.lineWidth = 2;
-
-
-    for (
-        const point
-        of state.points
-    ) {
-
-        context.beginPath();
-
-        context.arc(
-            point[0],
-            point[1],
-            5,
-            0,
-            Math.PI * 2
-        );
-
-        context.fill();
-
-    }
-
-
-    if (
-        state.points.length > 1
-    ) {
-
-        context.beginPath();
-
-        context.moveTo(
-            state.points[0][0],
-            state.points[0][1]
-        );
-
-        for (
-            let i = 1;
-            i < state.points.length;
-            i++
-        ) {
-
-            context.lineTo(
-                state.points[i][0],
-                state.points[i][1]
-            );
-
-        }
-
-        context.stroke();
+        renderPage();
 
     }
 
 }
 
 
-// --------------------------------------------------
-// Page navigation
-// --------------------------------------------------
-
 function nextPage() {
 
     const totalPages =
-        Math.max(
-            1,
-            Math.ceil(
-                cameras.length /
-                camerasPerPage
-            )
+        Math.ceil(
+            cameras.length
+            / camerasPerPage
         );
 
     if (
-        currentPage <
-        totalPages - 1
+        currentPage
+        < totalPages - 1
     ) {
 
         currentPage++;
@@ -1790,439 +1281,142 @@ function nextPage() {
 }
 
 
-function previousPage() {
+function updatePagination() {
 
-    if (
-        currentPage > 0
-    ) {
+    const totalPages =
+        Math.max(
+            1,
+            Math.ceil(
+                cameras.length
+                / camerasPerPage
+            )
+        );
 
-        currentPage--;
+    document.getElementById(
+        "previousButton"
+    ).disabled =
+        currentPage === 0;
 
-        renderPage();
+    document.getElementById(
+        "nextButton"
+    ).disabled =
+        currentPage >= totalPages - 1;
+
+}
+
+
+async function updateParkingStats() {
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/parking/statistics"
+            );
+
+        const data =
+            await response.json();
+
+        document.getElementById(
+            "totalSpaces"
+        ).textContent =
+            data.total_spaces || 0;
+
+        document.getElementById(
+            "occupiedSpaces"
+        ).textContent =
+            data.occupied_spaces || 0;
+
+        document.getElementById(
+            "availableSpaces"
+        ).textContent =
+            data.available_spaces || 0;
+
+        document.getElementById(
+            "parkingCount"
+        ).textContent =
+            `${data.occupied_spaces || 0} / ${data.total_spaces || 0}`;
+
+    } catch (error) {
+
+        console.error(
+            "Parking statistics error:",
+            error
+        );
 
     }
 
 }
 
 
-// --------------------------------------------------
-// Keyboard navigation
-// --------------------------------------------------
+async function updateVehicleStats() {
 
-document.addEventListener(
-    "keydown",
-    function(event) {
+    try {
 
-        if (
-            event.key === "ArrowRight"
-        ) {
-
-            nextPage();
-
-        }
-
-        if (
-            event.key === "ArrowLeft"
-        ) {
-
-            previousPage();
-
-        }
-
-    }
-);
-
-
-// --------------------------------------------------
-// Refresh
-// --------------------------------------------------
-
-setInterval(
-    loadCameras,
-    3000
-);
-
-setInterval(
-    loadParkingStatistics,
-    2000
-);
-
-setInterval(
-    function() {
-
-        for (
-            const camera
-            of cameras
-        ) {
-
-            loadCameraParking(
-                camera.id
+        const response =
+            await fetch(
+                "/health"
             );
 
-        }
+        const data =
+            await response.json();
 
-    },
-    2000
-);
+        const total =
+            data.ai?.total_detections || 0;
+
+        document.getElementById(
+            "vehicleCount"
+        ).textContent =
+            total;
+
+    } catch (error) {
+
+        console.error(
+            "Vehicle statistics error:",
+            error
+        );
+
+    }
+
+}
 
 
-// --------------------------------------------------
-// Initial load
-// --------------------------------------------------
+function escapeHtml(value) {
+
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+
+}
+
 
 loadCameras();
 
-loadParkingStatistics();
+updateParkingStats();
+
+updateVehicleStats();
+
+setInterval(
+    loadCameras,
+    5000
+);
+
+setInterval(
+    updateParkingStats,
+    2000
+);
+
+setInterval(
+    updateVehicleStats,
+    2000
+);
 
 </script>
-
 
 </body>
 
 </html>
 """
-
-        return HTMLResponse(
-            content=html
-        )
-
-
-    # --------------------------------------------------
-    # Camera API
-    # --------------------------------------------------
-
-    @app.get(
-        "/api/cameras"
-    )
-    async def get_cameras():
-
-        return JSONResponse(
-            {
-                "total":
-                    camera_manager.get_total_count(),
-
-                "active":
-                    camera_manager.get_active_count(),
-
-                "cameras":
-                    camera_manager.get_camera_info()
-            }
-        )
-
-
-    # --------------------------------------------------
-    # Parking zones
-    # --------------------------------------------------
-
-    @app.get(
-        "/api/parking/{camera_id}"
-    )
-    async def get_parking_zones(
-        camera_id: int
-    ):
-
-        if parking_manager is None:
-
-            return JSONResponse(
-                {
-                    "camera_id": camera_id,
-                    "zones": []
-                }
-            )
-
-        zones = (
-            parking_manager.get_zones(
-                camera_id
-            )
-        )
-
-        return JSONResponse(
-            {
-                "camera_id": camera_id,
-                "zones": zones
-            }
-        )
-
-
-    @app.post(
-        "/api/parking/{camera_id}"
-    )
-    async def add_parking_zone(
-        camera_id: int,
-        payload: dict
-    ):
-
-        if parking_manager is None:
-
-            return JSONResponse(
-                {
-                    "error":
-                        "Parking manager unavailable"
-                },
-                status_code=500
-            )
-
-        points = payload.get(
-            "points",
-            []
-        )
-
-        if len(points) != 4:
-
-            return JSONResponse(
-                {
-                    "error":
-                        "Exactly 4 points are required"
-                },
-                status_code=400
-            )
-
-        zone = (
-            parking_manager.add_zone(
-                camera_id,
-                points
-            )
-        )
-
-        return JSONResponse(
-            {
-                "success": True,
-                "zone": zone,
-                "zones":
-                    parking_manager.get_zones(
-                        camera_id
-                    )
-            }
-        )
-
-
-    @app.delete(
-        "/api/parking/{camera_id}"
-    )
-    async def delete_parking_zones(
-        camera_id: int
-    ):
-
-        if parking_manager is None:
-
-            return JSONResponse(
-                {
-                    "error":
-                        "Parking manager unavailable"
-                },
-                status_code=500
-            )
-
-        parking_manager.clear_zones(
-            camera_id
-        )
-
-        return JSONResponse(
-            {
-                "success": True,
-                "camera_id": camera_id,
-                "zones": []
-            }
-        )
-
-
-    # --------------------------------------------------
-    # Per-camera parking statistics
-    # --------------------------------------------------
-
-    @app.get(
-        "/api/parking/{camera_id}/statistics"
-    )
-    async def get_camera_parking_statistics(
-        camera_id: int
-    ):
-
-        if ai_manager is None:
-
-            return JSONResponse(
-                {
-                    "camera_id": camera_id,
-                    "total_spaces": 0,
-                    "occupied_spaces": 0,
-                    "available_spaces": 0,
-                    "occupancy": []
-                }
-            )
-
-        statistics = (
-            ai_manager.get_parking_statistics(
-                camera_id
-            )
-        )
-
-        return JSONResponse(
-            {
-                "camera_id": camera_id,
-                **statistics
-            }
-        )
-
-
-    # --------------------------------------------------
-    # Global parking statistics
-    # --------------------------------------------------
-
-    @app.get(
-        "/api/parking/statistics"
-    )
-    async def get_global_parking_statistics():
-
-        if ai_manager is None:
-
-            return JSONResponse(
-                {
-                    "total_spaces": 0,
-                    "occupied_spaces": 0,
-                    "available_spaces": 0
-                }
-            )
-
-        statistics = (
-            ai_manager.get_global_parking_statistics()
-        )
-
-        return JSONResponse(
-            statistics
-        )
-
-
-    # --------------------------------------------------
-    # Placeholder
-    # --------------------------------------------------
-
-    @app.get(
-        "/placeholder"
-    )
-    async def placeholder():
-
-        frame = np.zeros(
-            (
-                360,
-                640,
-                3
-            ),
-            dtype=np.uint8
-        )
-
-        cv2.putText(
-            frame,
-            "NOT AVAILABLE",
-            (150, 190),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
-            (255, 255, 255),
-            3,
-            cv2.LINE_AA
-        )
-
-        success, encoded = (
-            cv2.imencode(
-                ".jpg",
-                frame
-            )
-        )
-
-        if not success:
-
-            return JSONResponse(
-                {
-                    "error":
-                        "Unable to create image"
-                },
-                status_code=500
-            )
-
-        return StreamingResponse(
-            iter(
-                [
-                    encoded.tobytes()
-                ]
-            ),
-            media_type="image/jpeg"
-        )
-
-
-    # --------------------------------------------------
-    # Camera stream
-    # --------------------------------------------------
-
-    @app.get(
-        "/stream/{camera_id}"
-    )
-    async def stream_camera(
-        camera_id: int
-    ):
-
-        camera = (
-            camera_manager.get_camera(
-                camera_id
-            )
-        )
-
-        if camera is None:
-
-            return JSONResponse(
-                {
-                    "error":
-                        "Camera not found"
-                },
-                status_code=404
-            )
-
-
-        def generate():
-
-            while True:
-
-                frame = (
-                    camera.get_stream_frame()
-                )
-
-                if frame is None:
-
-                    frame = (
-                        camera.create_placeholder()
-                    )
-
-                success, encoded = (
-                    cv2.imencode(
-                        ".jpg",
-                        frame,
-                        [
-                            cv2.IMWRITE_JPEG_QUALITY,
-                            75
-                        ]
-                    )
-                )
-
-                if not success:
-
-                    time.sleep(0.05)
-
-                    continue
-
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n"
-                    + encoded.tobytes()
-                    + b"\r\n"
-                )
-
-                time.sleep(0.03)
-
-
-        return StreamingResponse(
-            generate(),
-            media_type=(
-                "multipart/x-mixed-replace; "
-                "boundary=frame"
-            )
-        )
-
-
-    return app
