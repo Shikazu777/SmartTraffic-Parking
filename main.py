@@ -6,14 +6,34 @@ from fastapi import FastAPI
 
 from core.camera_manager import CameraManager
 from ai.ai_manager import AIManager
+from ai.trafficvision.parking import ParkingManager
 from ui.dashboard import create_dashboard
 
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config" / "cameras.json"
+
+CONFIG_PATH = (
+    BASE_DIR
+    / "config"
+    / "cameras.json"
+)
+
+PARKING_CONFIG_PATH = (
+    BASE_DIR
+    / "config"
+    / "parking_zones.json"
+)
 
 
-ai_manager = AIManager()
+parking_manager = ParkingManager(
+    str(PARKING_CONFIG_PATH)
+)
+
+
+ai_manager = AIManager(
+    parking_manager
+)
+
 
 camera_manager = CameraManager(
     str(CONFIG_PATH),
@@ -60,7 +80,8 @@ async def lifespan(app: FastAPI):
 
 app = create_dashboard(
     camera_manager,
-    ai_manager
+    ai_manager,
+    parking_manager
 )
 
 
@@ -76,7 +97,11 @@ async def health():
             "active": camera_manager.get_active_count()
         },
 
-        "ai": ai_manager.get_status()
+        "ai": ai_manager.get_status(),
+
+        "parking": (
+            ai_manager.get_global_parking_statistics()
+        )
     }
 
 
