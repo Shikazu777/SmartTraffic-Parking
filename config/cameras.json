@@ -1,0 +1,68 @@
+{
+    "cameras": [
+        {
+            "id": 1,
+            "name": "Mac Camera",
+            "type": "usb",
+            "source": 0,
+            "enabled": true,
+            "ai_mode": "none"
+        },
+        {
+            "id": 2,
+            "name": "iPhone Camera",
+            "type": "usb",
+            "source": 1,
+            "enabled": true,
+            "ai_mode": "none"
+        },
+        {
+            "id": 3,
+            "name": "Camera 3",
+            "type": "usb",
+            "source": 2,
+            "enabled": false,
+            "ai_mode": "none"
+        },
+        {
+            "id": 4,
+            "name": "Camera 4",
+            "type": "usb",
+            "source": 3,
+            "enabled": false,
+            "ai_mode": "none"
+        },
+        {
+            "id": 5,
+            "name": "IP Camera 5",
+            "type": "rtsp",
+            "source": "",
+            "enabled": false,
+            "ai_mode": "trafficvision"
+        },
+        {
+            "id": 6,
+            "name": "IP Camera 6",
+            "type": "rtsp",
+            "source": "",
+            "enabled": false,
+            "ai_mode": "smartvision"
+        },
+        {
+            "id": 7,
+            "name": "IP Camera 7",
+            "type": "rtsp",
+            "source": "",
+            "enabled": false,
+            "ai_mode": "none"
+        },
+        {
+            "id": 8,
+            "name": "IP Camera 8",
+            "type": "rtsp",
+            "source": "",
+            "enabled": false,
+            "ai_mode": "none"
+        }
+    ]
+}

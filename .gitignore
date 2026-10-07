@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Generated output
+output/
+outputs/
+screenshots/
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.m4v
+
+# Large camera recordings
+videos/
+recordings/
+
+# YOLO / AI model files
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+
+# AI caches
+models/cache/
+runs/
+wandb/
+
+# Generated data
+*.npy
+*.npz
+*.pickle
+*.pkl
+
+# Local configuration
+config/local/
